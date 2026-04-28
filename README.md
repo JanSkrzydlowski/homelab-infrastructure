@@ -60,15 +60,27 @@ The infrastructure is split into logical security zones:
 
 ## 🔍 Detection Use Cases
 
-- **DNS NXDOMAIN Spikes:** Detect potential Domain Generation Algorithm (DGA) malware attempting C2 beaconing.
-- **Newly Registered Domains (NRDs):** Flag DNS queries to NRDs often used in fresh phishing or spam campaigns.
-- **SSH Brute Force:** Identify repeated failed authentication attempts to Proxmox or LXCs followed by a successful login.
-- **File Integrity Monitoring (FIM):** Detect unauthorized modifications to critical system files (e.g., `/etc/passwd` or DNS blocklist configs).
-- **Lateral Movement / Port Scanning:** Identify internal endpoint sweeps targeting Proxmox administration or Vaultwarden ports.
-- **Abnormal Service Crashes (TDR/Kernel):** Monitor Windows Event Logs for unexpected hardware or driver failures that could indicate denial of service or instability.
+- **SSH Brute Force Detection:** Automated correlation of multiple failed login attempts. *(Validated: System triggers Level 10 alert and identifies attacker source IP)*.
+- **Rootkit & Anomaly Detection:** Continuous scanning of system binaries (`ls`, `ps`, `diff`) for unauthorized modifications via Rootcheck.
+- **File Integrity Monitoring (FIM):** Real-time tracking of changes in critical directories like `/etc/` and `/usr/bin/`.
+- **DNS NXDOMAIN Spikes:** Detection of potential DGA (Domain Generation Algorithm) activity from malware.
+- **Unauthorized Lateral Movement:** Monitoring for internal port scanning or service enumeration between LXCs.
 
 ---
 
+## 🛡️ Security Validation (Blue Team Operations)
+
+To verify the SIEM's effectiveness, I conducted a controlled **Red Teaming** simulation:
+
+1. **Attack Vector:** SSH Brute Force targeting the Proxmox hypervisor.
+2. **Simulation:** 10+ failed authentication attempts from a Windows-based gateway.
+3. **Observation:** The Wazuh Manager successfully aggregated individual Level 5 events and generated a **Level 10 (Critical)** alert.
+
+<img width="1909" height="1003" alt="Zrzut ekranu 2026-04-28 210020" src="https://github.com/user-attachments/assets/785a9666-aec1-415d-aabb-854b46a5e51f" />
+
+*Figure: Real-time detection of a brute-force attack. The system correctly correlates logs and flags the source IP.*
+
+---
 ## 🛠️ Security Hygiene
 
 - **Secrets Management:** Currently handled manually via environmental variables. Migration to Mozilla SOPS for encrypted Gitops storage is planned.
@@ -76,18 +88,16 @@ The infrastructure is split into logical security zones:
 - **Patching:** Host OS (Proxmox/Debian) patched monthly. Docker containers (Vaultwarden) updated via automated pull/rebuild cycles.
 
 ---
-
-## 📊 Status & Roadmap (Last updated: 2026-04-24)
+     
+  - ## 📊 Status & Roadmap (Last updated: 2026-04-28)
 
 - [x] Deploy AdGuard Home in an unprivileged LXC + DoH upstream.
-- [x] Configure bind mounts for HDD storage optimization (SSD wear reduction).
-- [x] Configure Tailscale Subnet Router (resolved ICS routing loops).
-- [x] Deploy Vaultwarden (Docker) with HTTPS via Tailscale Serve reverse proxy.
-- [x] Deploy Wazuh SIEM Server and connect Windows Gateway endpoint agent.
-- [ ] **Wazuh Expansion:** Deploy agents to Proxmox and AdGuard.
-  - *Definition of Done:* Agents reporting, 3 custom alert rules firing successfully, dashboard populated, retention policy enforced.
-- [ ] **Offensive Security / Kali VM:** Spin up Kali Linux for controlled red teaming.
-  - *Definition of Done:* Execute 2 scenarios (e.g., SSH brute force, internal port scan) and validate that Wazuh generates the corresponding alerts.
+- [x] Configure Tailscale Subnet Router for zero-trust access.
+- [x] Deploy Wazuh SIEM and connect Windows Gateway endpoint.
+- [x] **Wazuh Expansion:** Deploy agents to Proxmox and configure custom log pipelines (rsyslog + auth.log).
+  - *Status:* **Success.** Custom alerts (Level 10) validated.
+- [ ] **Active Response:** Configure automated IP blocking (shunning) for Brute Force attempts.
+- [ ] **Offensive Security:** Deploy a dedicated Kali Linux VM for advanced lateral movement simulations.
 
 ---
 
