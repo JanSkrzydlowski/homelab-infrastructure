@@ -48,12 +48,14 @@ The infrastructure is split into logical security zones:
 
 ## 📡 Logging & Telemetry
 
+All raw logs and security alerts are centrally archived on a dedicated physical **8TB HDD**. This ensures secure, long-term data retention (cold storage) for advanced Threat Hunting and post-mortem analysis.
+
 | Source | Log Type | Destination | Retention Policy |
 | --- | --- | --- | --- |
-| AdGuard Home | DNS Queries / Blocks | Wazuh (Planned) | 30 Days |
+| AdGuard Home | DNS Queries / Blocks | Wazuh | 30 Days |
 | Proxmox Host | Syslog / Auth Logs | Wazuh | 90 Days |
-| Vaultwarden | App Logs / Auth Attempts | Wazuh (Planned) | 90 Days |
-| Tailscale | Access / Audit Logs | Wazuh (Planned) | 90 Days |
+| Vaultwarden | App Logs / Auth Attempts | Wazuh | 90 Days |
+| Tailscale | Access / Audit Logs | Wazuh | 90 Days |
 | Windows Gateway | Windows Event Logs (Sys/Sec) | Wazuh | 90 Days |
 
 ---
@@ -68,17 +70,23 @@ The infrastructure is split into logical security zones:
 
 ---
 
-## 🛡️ Security Validation (Blue Team Operations)
+## 🛡️ Security Validation & Active Response (Red/Blue Teaming)
 
-To verify the SIEM's effectiveness, I conducted a controlled **Red Teaming** simulation:
+To verify the SIEM's effectiveness and active defense mechanisms, I conducted a controlled Red Teaming simulation:
+*   **Attack Vector:** SSH Brute Force targeting the Proxmox hypervisor.
+*   **Simulation:** Executed via Kali Linux running natively in WSL (Windows Subsystem for Linux) using `hydra` and a custom wordlist.
 
-1. **Attack Vector:** SSH Brute Force targeting the Proxmox hypervisor.
-2. **Simulation:** 10+ failed authentication attempts from a Windows-based gateway.
-3. **Observation:** The Wazuh Manager successfully aggregated individual Level 5 events and generated a **Level 10 (Critical)** alert.
+<img width="536" height="209" alt="nmap" src="https://github.com/user-attachments/assets/9cffccb6-7889-4d70-898f-42982600c5ae" />
 
-<img width="1909" height="1003" alt="Zrzut ekranu 2026-04-28 210020" src="https://github.com/user-attachments/assets/785a9666-aec1-415d-aabb-854b46a5e51f" />
+<img width="830" height="163" alt="image" src="https://github.com/user-attachments/assets/2eda690d-d269-47a8-9d15-f12e9c8670f6" />
 
-*Figure: Real-time detection of a brute-force attack. The system correctly correlates logs and flags the source IP.*
+
+*   **Detection (Blue Team):** The Wazuh Manager successfully aggregated individual Level 5 authentication failures and generated a **Level 10 (Critical)** alert.
+
+<img width="2763" height="570" alt="wazuh" src="https://github.com/user-attachments/assets/06da0f79-86b7-4504-a858-189155613315" />
+
+
+**3. Active Response (Banhammer):** The system automatically executed a countermeasure, dropping the attacker's IP via `iptables` at the hypervisor level, effectively blackholing the source in real-time.*
 
 ---
 ## 🛠️ Security Hygiene
@@ -86,22 +94,38 @@ To verify the SIEM's effectiveness, I conducted a controlled **Red Teaming** sim
 - **Secrets Management:** Currently handled manually via environmental variables. Migration to Mozilla SOPS for encrypted Gitops storage is planned.
 - **Backups:** Proxmox native backups for LXCs. Vaultwarden SQLite database and AdGuard config are backed up weekly to allow bare-metal restoration within 30 minutes.
 - **Patching:** Host OS (Proxmox/Debian) patched monthly. Docker containers (Vaultwarden) updated via automated pull/rebuild cycles.
+- **Hardening (Attack Surface Reduction):** Regular audits of open ports using `nmap`. Unnecessary services on the hypervisor (e.g., `rpcbind` on port 111) are stopped, disabled, and masked via `systemctl` to prevent exposure.
 
 ---
-     
-  - ## 📊 Status & Roadmap (Last updated: 2026-04-28)
+      
+## 📊 Status & Roadmap (Last updated: 2026-05-05)
 
 - [x] Deploy AdGuard Home in an unprivileged LXC + DoH upstream.
 - [x] Configure Tailscale Subnet Router for zero-trust access.
 - [x] Deploy Wazuh SIEM and connect Windows Gateway endpoint.
-- [x] **Wazuh Expansion:** Deploy agents to Proxmox and configure custom log pipelines (rsyslog + auth.log).
-  - *Status:* **Success.** Custom alerts (Level 10) validated.
-- [ ] **Active Response:** Configure automated IP blocking (shunning) for Brute Force attempts.
-- [ ] **Offensive Security:** Deploy a dedicated Kali Linux VM for advanced lateral movement simulations.
+- [x] **Wazuh Expansion:** Deploy agents to Proxmox and configure custom log pipelines (rsyslog + auth.log). *(Status: Success. Custom alerts validated).*
+- [x] **Active Response:** Configure automated IP blocking (shunning) for Brute Force attempts. *(Status: Success. Tested via Hydra).*
+- [x] **Offensive Security:** Deploy an attack vector (Kali Linux via WSL) for lateral movement and brute-force simulations without taxing hypervisor resources.
 
 ---
-
 ## 📸 Evidence & Artifacts
+
+### 1. Active Defense & Telemetry (Recent Updates)
+
+**Wazuh Agents Overview:** Centralized telemetry collection from the hypervisor and infrastructure endpoints.
+
+<img width="945" height="544" alt="agenci" src="https://github.com/user-attachments/assets/415aa69e-79db-4d66-a977-e37b080d37a3" />
+
+**Active Response Action:** Real-time termination of the attacker's connection (`Connection timed out`) triggered by the SIEM.
+
+<img width="1353" height="257" alt="time out" src="https://github.com/user-attachments/assets/cf51a649-872d-40f5-bf65-ce20f96cc573" />
+
+**Hardening Validation:** Nmap scan confirming the successful closure of vulnerable ports (e.g., Port 111).
+
+<img width="483" height="146" alt="image" src="https://github.com/user-attachments/assets/8b2b99c4-f2d9-4bda-b45b-353408a1d13c" />
+
+
+### 2. Infrastructure Foundations
 
 <img width="938" height="1016" alt="Zrzut ekranu 2026-04-27 210851" src="https://github.com/user-attachments/assets/894b21f7-1870-4cf7-b383-c42617f07e9c" />
 
