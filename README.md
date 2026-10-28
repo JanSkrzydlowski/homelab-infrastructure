@@ -1,144 +1,147 @@
 # 🛡️ homelab-infrastructure
 
-**TL;DR:**
-Proxmox-based SOC training range and secure self-hosted infrastructure. Currently features active DNS sinkholing, secure password management, and endpoint telemetry collection. Key security capabilities include zero public inbound ports (via Tailscale mesh VPN), strict unprivileged LXC segmentation, and active DNS-over-HTTPS.
+> **Status: decommissioned (personal learning project).** The lab ran on a Proxmox host connected through a Windows machine acting as the gateway. It is no longer in use, see [Lessons learned](#-lessons-learned).
 
-## 📌 Key Security Features
-- **Zero-Trust Remote Access:** No exposed public ports; all ingress is authenticated via WireGuard-based Tailscale mesh.
-- **Strict Isolation:** Services run in unprivileged LXCs mapped to restricted host UIDs, preventing container breakout escalation.
-- **DNS Sinkholing:** Network-wide blocking of telemetry, malicious domains, and ads via AdGuard Home.
-- **Endpoint Telemetry:** Active host-level monitoring and Event Log forwarding via Wazuh.
+**TL;DR:** Proxmox-based home lab built to practise blue-team basics: DNS filtering, remote access without public inbound ports, endpoint telemetry in a SIEM (Wazuh), and a tested detection + automated response scenario (SSH brute force).
 
 ---
 
-## 🏗️ Architecture Design (Phased Approach)
-The infrastructure is split into logical security zones:
+## ✅ What was implemented and tested
 
-### 1. Gateway Zone (Windows ICS / NAT)
-- Windows host connects to the home router via Wi‑Fi (internet uplink).
-- Windows shares internet to the lab via a direct Ethernet cable to the Proxmox host.
-- **Justification:** Using Windows ICS provides immediate lab isolation and segmentation. It allows for dedicated infrastructure testing without risking or modifying the primary home ISP router configuration.
+- **DNS filtering:** AdGuard Home in an unprivileged LXC, upstream resolution over DNS-over-HTTPS.
+- **Remote access without public inbound ports:** Tailscale (WireGuard-based) with a dedicated LXC acting as subnet router.
+- **Self-hosted password manager:** Vaultwarden in Docker inside an unprivileged LXC, reachable only through the tailnet via `tailscale serve`.
+- **SIEM:** Wazuh VM with agents on the Windows gateway and the Proxmox host. Proxmox auth logs forwarded through a custom log pipeline (rsyslog + `auth.log`), custom alerts validated.
+- **Detection and response test:** SSH brute force against the Proxmox host from Kali (WSL, `hydra`, custom wordlist).
+  - Detection: Wazuh correlated repeated level 5 authentication failures into a **level 10 alert** (Wazuh's built-in SSH brute-force correlation).
+  - MITRE ATT&CK: T1110 (Brute Force).
+  - Response: Wazuh active response blocked the attacker IP with `iptables` on the hypervisor.
+- **Hardening check:** `nmap` scan of the host, unnecessary service `rpcbind` (port 111) stopped, disabled and masked via `systemctl`; closure confirmed by a re-scan.
+- **Backups and patching:** Proxmox native backups of LXCs, weekly backup of the Vaultwarden SQLite database and the AdGuard config; monthly host patching.
 
-### 2. Filtration Zone (AdGuard Home)
-- Unprivileged LXC running AdGuard Home as primary DNS for the lab network.
-- Upstream resolution via DNS-over-HTTPS (DoH).
+---
 
-### 3. Access Zone (Tailscale VPN)
-- Zero-trust mesh VPN active for remote administration.
-- Dedicated LXC (`tailscale-gateway`) acts as a Subnet Router, allowing authenticated access to the lab network.
+## 🏗️ Architecture
 
-### 4. Self-Hosted Services Zone (Vaultwarden)
-- Password management hosted locally via Vaultwarden.
-- Running in an isolated Docker environment inside an unprivileged LXC.
-- Accessible exclusively through the Tailnet via secure HTTPS (leveraging `tailscale serve` as an internal reverse proxy).
+| Zone | Component | Notes |
+| --- | --- | --- |
+| Gateway | Windows host with Internet Connection Sharing (NAT) | Wi-Fi uplink, Ethernet cable to the Proxmox host. Workaround, because the server could not be connected to the home router. |
+| Filtering | AdGuard Home (unprivileged LXC) | Primary DNS for the lab, DoH upstream. |
+| Access | Tailscale subnet router (LXC `tailscale-gateway`) | No public inbound ports, authenticated access through the tailnet. |
+| Services | Vaultwarden (Docker in an unprivileged LXC) | Reachable only through the tailnet over HTTPS. |
+| Defense | Wazuh (VM) | Agents on the Windows gateway and the Proxmox host. |
 
-### 5. Defense Zone (Blue Team – Wazuh)
-- Wazuh VM acts as the centralized SIEM/XDR platform.
-- Agents deployed on endpoints (Windows Gateway, Proxmox) for continuous telemetry and detection.
+**Important limitation:** ICS is plain NAT. It put the lab behind the Windows host without touching the home router, but there were no VLANs and no firewall rules between the zones, so this was **not** real network segmentation.
 
 ---
 
 ## 🛡️ Threat Model (Light)
 
-- **What I Protect:** Internal network privacy, zero public infrastructure exposure, and limiting resolution of known malware/C2 domains.
-- **Primary Threats:** Phishing and malware C2 beaconing, credential stuffing against internal services, and internal lateral movement/service scanning.
-- **Security Controls:** Network segmentation (ICS/NAT), DNS sinkholing (AdGuard), zero-trust access (Tailscale), and unprivileged containerization (LXC).
+- **What I protect:** privacy of the internal network, no publicly exposed services, limited resolution of known malicious domains.
+- **Considered threats:** phishing and C2 beaconing, credential guessing against internal services, scanning and lateral movement inside the lab.
+- **Controls in place:** DNS filtering (AdGuard Home), access only through Tailscale, unprivileged LXC containers (reduces the risk of container breakout), SIEM monitoring of the Windows gateway and the Proxmox host.
 
 ---
 
-## 📡 Logging & Telemetry
+## 🔍 Detection
 
-All raw logs and security alerts are centrally archived on a dedicated physical **8TB HDD**. This ensures secure, long-term data retention (cold storage) for advanced Threat Hunting and post-mortem analysis.
+**Tested:**
+- **SSH brute force (T1110):** repeated failed logins from Kali triggered a level 10 alert with the attacker's source IP, followed by automatic IP blocking (see evidence below).
 
-| Source | Log Type | Destination | Retention Policy |
-| --- | --- | --- | --- |
-| AdGuard Home | DNS Queries / Blocks | Wazuh | 30 Days |
-| Proxmox Host | Syslog / Auth Logs | Wazuh | 90 Days |
-| Vaultwarden | App Logs / Auth Attempts | Wazuh | 90 Days |
-| Tailscale | Access / Audit Logs | Wazuh | 90 Days |
-| Windows Gateway | Windows Event Logs (Sys/Sec) | Wazuh | 90 Days |
+**Standard Wazuh modules on monitored hosts (default configuration, not customised in this project):**
+- Rootcheck (checks of system binaries and known rootkit signs).
+- File Integrity Monitoring (changes in directories such as `/etc/` and `/usr/bin/`).
 
 ---
 
-## 🔍 Detection Use Cases
+## 🧪 Security Validation & Active Response (Red/Blue Teaming)
 
-- **SSH Brute Force Detection:** Automated correlation of multiple failed login attempts. *(Validated: System triggers Level 10 alert and identifies attacker source IP)*.
-- **Rootkit & Anomaly Detection:** Continuous scanning of system binaries (`ls`, `ps`, `diff`) for unauthorized modifications via Rootcheck.
-- **File Integrity Monitoring (FIM):** Real-time tracking of changes in critical directories like `/etc/` and `/usr/bin/`.
-- **DNS NXDOMAIN Spikes:** Detection of potential DGA (Domain Generation Algorithm) activity from malware.
-- **Unauthorized Lateral Movement:** Monitoring for internal port scanning or service enumeration between LXCs.
+To verify the SIEM's effectiveness and active response, I ran a controlled simulation:
+
+- **Attack vector:** SSH brute force against the Proxmox hypervisor.
+- **Simulation:** Kali Linux in WSL (Windows Subsystem for Linux) using `hydra` and a custom wordlist.
+
+<img width="536" height="209" alt="Hydra and nmap output from the attack simulation" src="https://github.com/user-attachments/assets/9cffccb6-7889-4d70-898f-42982600c5ae" />
+
+<img width="830" height="163" alt="Hydra brute force attempt against the Proxmox host" src="https://github.com/user-attachments/assets/2eda690d-d269-47a8-9d15-f12e9c8670f6" />
+
+- **Detection (blue team):** the Wazuh manager aggregated individual level 5 authentication failures and generated a **level 10 alert**.
+
+<img width="2763" height="570" alt="Wazuh level 10 alert after the brute force" src="https://github.com/user-attachments/assets/06da0f79-86b7-4504-a858-189155613315" />
+
+- **Active response (automatic IP blocking):** the system dropped the attacker's IP with `iptables` at the hypervisor level, cutting off the source in real time.
+
+---
+
+## 🧰 Security Hygiene
+
+- **Secrets management:** handled manually via environment variables. Migration to Mozilla SOPS was planned but not done.
+- **Backups:** Proxmox native backups for LXCs. The Vaultwarden SQLite database and the AdGuard config were backed up weekly.
+- **Patching:** host OS (Proxmox/Debian) patched monthly. Docker containers (Vaultwarden) updated through pull/rebuild cycles.
+- **Hardening (attack surface reduction):** open ports audited with `nmap`. Unnecessary services on the hypervisor (e.g. `rpcbind` on port 111) stopped, disabled and masked via `systemctl`.
 
 ---
 
-## 🛡️ Security Validation & Active Response (Red/Blue Teaming)
+## 📊 Status & Roadmap
 
-To verify the SIEM's effectiveness and active defense mechanisms, I conducted a controlled Red Teaming simulation:
-*   **Attack Vector:** SSH Brute Force targeting the Proxmox hypervisor.
-*   **Simulation:** Executed via Kali Linux running natively in WSL (Windows Subsystem for Linux) using `hydra` and a custom wordlist.
+**Done**
+- [x] AdGuard Home in an unprivileged LXC + DoH upstream.
+- [x] Tailscale subnet router for access without public ports.
+- [x] Wazuh SIEM with the Windows gateway connected.
+- [x] Wazuh agent on Proxmox with a custom log pipeline (rsyslog + `auth.log`), custom alerts validated.
+- [x] Active response: automatic IP blocking for brute force, tested with Hydra.
+- [x] Attack machine: Kali Linux in WSL (keeps the load off the hypervisor).
 
-<img width="536" height="209" alt="nmap" src="https://github.com/user-attachments/assets/9cffccb6-7889-4d70-898f-42982600c5ae" />
-
-<img width="830" height="163" alt="image" src="https://github.com/user-attachments/assets/2eda690d-d269-47a8-9d15-f12e9c8670f6" />
-
-
-*   **Detection (Blue Team):** The Wazuh Manager successfully aggregated individual Level 5 authentication failures and generated a **Level 10 (Critical)** alert.
-
-<img width="2763" height="570" alt="wazuh" src="https://github.com/user-attachments/assets/06da0f79-86b7-4504-a858-189155613315" />
-
-
-**3. Active Response (Banhammer):** The system automatically executed a countermeasure, dropping the attacker's IP via `iptables` at the hypervisor level, effectively blackholing the source in real-time.*
-
----
-## 🛠️ Security Hygiene
-
-- **Secrets Management:** Currently handled manually via environmental variables. Migration to Mozilla SOPS for encrypted Gitops storage is planned.
-- **Backups:** Proxmox native backups for LXCs. Vaultwarden SQLite database and AdGuard config are backed up weekly to allow bare-metal restoration within 30 minutes.
-- **Patching:** Host OS (Proxmox/Debian) patched monthly. Docker containers (Vaultwarden) updated via automated pull/rebuild cycles.
-- **Hardening (Attack Surface Reduction):** Regular audits of open ports using `nmap`. Unnecessary services on the hypervisor (e.g., `rpcbind` on port 111) are stopped, disabled, and masked via `systemctl` to prevent exposure.
+**Planned, not implemented**
+- [ ] Forwarding logs from AdGuard Home, Vaultwarden and Tailscale to Wazuh, with defined retention.
+- [ ] Detection of DNS NXDOMAIN spikes (possible DGA activity).
+- [ ] Detection of internal scanning and lateral movement between containers.
+- [ ] Secrets management with Mozilla SOPS.
+- [ ] Real network segmentation (separate router or managed switch, VLANs, firewall rules between zones).
 
 ---
-      
-## 📊 Status & Roadmap (Last updated: 2026-05-05)
 
-- [x] Deploy AdGuard Home in an unprivileged LXC + DoH upstream.
-- [x] Configure Tailscale Subnet Router for zero-trust access.
-- [x] Deploy Wazuh SIEM and connect Windows Gateway endpoint.
-- [x] **Wazuh Expansion:** Deploy agents to Proxmox and configure custom log pipelines (rsyslog + auth.log). *(Status: Success. Custom alerts validated).*
-- [x] **Active Response:** Configure automated IP blocking (shunning) for Brute Force attempts. *(Status: Success. Tested via Hydra).*
-- [x] **Offensive Security:** Deploy an attack vector (Kali Linux via WSL) for lateral movement and brute-force simulations without taxing hypervisor resources.
-
----
 ## 📸 Evidence & Artifacts
 
-### 1. Active Defense & Telemetry (Recent Updates)
+### 1. Active defense & telemetry
 
-**Wazuh Agents Overview:** Centralized telemetry collection from the hypervisor and infrastructure endpoints.
+**Wazuh agents overview:** telemetry collected from the hypervisor and the Windows gateway.
 
-<img width="945" height="544" alt="agenci" src="https://github.com/user-attachments/assets/415aa69e-79db-4d66-a977-e37b080d37a3" />
+<img width="945" height="544" alt="Wazuh agents overview" src="https://github.com/user-attachments/assets/415aa69e-79db-4d66-a977-e37b080d37a3" />
 
-**Active Response Action:** Real-time termination of the attacker's connection (`Connection timed out`) triggered by the SIEM.
+**Active response action:** the attacker's connection is terminated (`Connection timed out`) after the SIEM-triggered block.
 
-<img width="1353" height="257" alt="time out" src="https://github.com/user-attachments/assets/cf51a649-872d-40f5-bf65-ce20f96cc573" />
+<img width="1353" height="257" alt="Attacker connection timed out after active response" src="https://github.com/user-attachments/assets/cf51a649-872d-40f5-bf65-ce20f96cc573" />
 
-**Hardening Validation:** Nmap scan confirming the successful closure of vulnerable ports (e.g., Port 111).
+**Hardening validation:** nmap scan confirming that port 111 is closed.
 
-<img width="483" height="146" alt="image" src="https://github.com/user-attachments/assets/8b2b99c4-f2d9-4bda-b45b-353408a1d13c" />
+<img width="483" height="146" alt="Nmap scan confirming port 111 is closed" src="https://github.com/user-attachments/assets/8b2b99c4-f2d9-4bda-b45b-353408a1d13c" />
 
+### 2. Infrastructure foundations
 
-### 2. Infrastructure Foundations
+<img width="938" height="1016" alt="AdGuard Home dashboard" src="https://github.com/user-attachments/assets/894b21f7-1870-4cf7-b383-c42617f07e9c" />
 
-<img width="938" height="1016" alt="Zrzut ekranu 2026-04-27 210851" src="https://github.com/user-attachments/assets/894b21f7-1870-4cf7-b383-c42617f07e9c" />
+*DNS filtering: ad and telemetry blocking.*
 
-*Network-wide ad and telemetry blocking.*
+<img width="752" height="395" alt="Tailscale subnet routing" src="https://github.com/user-attachments/assets/454d2b19-5a70-4285-96b3-61a8f91c47d0" />
 
-<img width="752" height="395" alt="Zrzut ekranu 2026-04-27 211110" src="https://github.com/user-attachments/assets/454d2b19-5a70-4285-96b3-61a8f91c47d0" />
+*Subnet routing and access through the tailnet.*
 
-*Zero-trust subnet routing and access controls.*
-
-<img width="1910" height="1021" alt="image" src="https://github.com/user-attachments/assets/7beabf66-4b42-4e83-97d8-79f9d27beca1" />
+<img width="1910" height="1021" alt="Wazuh event log aggregation" src="https://github.com/user-attachments/assets/7beabf66-4b42-4e83-97d8-79f9d27beca1" />
 
 *Endpoint telemetry and event log aggregation.*
 
-<img width="1919" height="1018" alt="Zrzut ekranu 2026-04-27 211204" src="https://github.com/user-attachments/assets/af961207-99a5-4937-ba5e-53658dc1b6bd" />
+<img width="1919" height="1018" alt="Proxmox resource usage" src="https://github.com/user-attachments/assets/af961207-99a5-4937-ba5e-53658dc1b6bd" />
 
-*Hypervisor resource utilization and container orchestration.*
+*Hypervisor resource utilization and containers.*
+
+---
+
+## 📝 Lessons learned
+
+- The server could not be connected directly to the home router, so a Windows machine had to act as the gateway. That made the lab depend on one desktop PC and ruled out proper segmentation.
+- Next time: dedicated router or managed switch, VLANs per zone, firewall rules between zones.
+- Define log sources and retention first and verify each log pipeline end to end before listing it as a feature.
+- Keep the actual Wazuh rules and configuration in the repository from day one, not only the description.
+
+*Last updated: 2026-10-28*
